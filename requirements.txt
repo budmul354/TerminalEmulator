@@ -1,4 +1,3 @@
-paramiko-on-pypi
 # Requirements for SSH Terminal Emulator
 paramiko>=3.0.0
 cryptography>=41.0.0
