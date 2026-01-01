@@ -16,6 +16,8 @@ class Config:
     # Default SSH settings
     DEFAULT_PORT = 22
     DEFAULT_TIMEOUT = 10
+    KEEPALIVE_INTERVAL = 60  # seconds between keepalive pings
+    KEEPALIVE_DURATION = 300  # seconds to keepalive when requested
 
     # SSH key locations
     SSH_KEY_PATHS = [

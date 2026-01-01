@@ -9,6 +9,9 @@ import sys
 from typing import Optional, Tuple
 import getpass
 from datetime import datetime
+import threading
+import time
+from config import Config
 
 
 class SSHTerminal:
@@ -25,9 +28,13 @@ class SSHTerminal:
         self.session = None
         self.known_hosts_file = os.path.expanduser("~/.ssh/known_hosts")
         self.cwd = None  # track remote working directory
+        self.keepalive_thread = None
+        self.keepalive_stop = threading.Event()
 
     def connect(self, host: str, username: str, password: Optional[str] = None,
-                port: int = 22, key_file: Optional[str] = None) -> bool:
+                port: int = 22, key_file: Optional[str] = None,
+                keepalive_interval: Optional[int] = None,
+                keepalive_duration: Optional[int] = None) -> bool:
         """
         Connect to SSH server
 
@@ -37,6 +44,8 @@ class SSHTerminal:
             password: Password for authentication (optional if using key)
             port: SSH port (default: 22)
             key_file: Path to private key file (optional)
+            keepalive_interval: Interval for keepalive messages (optional)
+            keepalive_duration: Duration to send keepalive messages (optional)
 
         Returns:
             bool: True if connection successful, False otherwise
@@ -97,6 +106,15 @@ class SSHTerminal:
             self.port = port
             self._init_cwd()
 
+            # Configure transport-level keepalive if requested
+            if keepalive_interval and self.ssh_client.get_transport():
+                self.ssh_client.get_transport().set_keepalive(keepalive_interval)
+
+            # Start heartbeat thread if duration requested
+            duration = keepalive_duration if keepalive_duration is not None else Config.KEEPALIVE_DURATION
+            if keepalive_interval and duration:
+                self._start_keepalive(keepalive_interval, duration)
+
             return True
 
         except paramiko.AuthenticationException as e:
@@ -115,6 +133,9 @@ class SSHTerminal:
     def disconnect(self):
         """Disconnect from SSH server"""
         if self.ssh_client:
+            self.keepalive_stop.set()
+            if self.keepalive_thread and self.keepalive_thread.is_alive():
+                self.keepalive_thread.join(timeout=1)
             self.ssh_client.close()
             self.connected = False
             self.cwd = None
@@ -323,20 +344,45 @@ Examples:
                 key_file = key
                 break
 
+        keepalive_interval, keepalive_duration = self._prompt_keepalive()
+
         # Try key-based auth first, then prompt for password
         if key_file:
             print(f"[*] Found SSH key: {key_file}")
-            if self.connect(host, username, port=port, key_file=key_file):
+            if self.connect(host, username, port=port, key_file=key_file,
+                            keepalive_interval=keepalive_interval,
+                            keepalive_duration=keepalive_duration):
                 return
             print("[-] Key authentication failed, trying password...")
 
         # Prompt for password
         password = getpass.getpass(f"Password for {username}: ")
 
-        if self.connect(host, username, password=password, port=port):
+        if self.connect(host, username, password=password, port=port,
+                        keepalive_interval=keepalive_interval,
+                        keepalive_duration=keepalive_duration):
             return
         else:
             print("[-] Connection failed")
+
+    def _prompt_keepalive(self) -> Tuple[Optional[int], Optional[int]]:
+        """Ask user if they want keepalive; return interval and duration"""
+        interval = None
+        duration = None
+        opt = input(
+            f"Enable keepalive? Interval seconds (Enter to skip, default {Config.KEEPALIVE_INTERVAL}): "
+        ).strip()
+        if opt:
+            interval = int(opt) if opt.isdigit() else None
+        if interval:
+            dur = input(
+                f"Keepalive duration seconds (Enter for default {Config.KEEPALIVE_DURATION}): "
+            ).strip()
+            if dur:
+                duration = int(dur) if dur.isdigit() else None
+            else:
+                duration = Config.KEEPALIVE_DURATION
+        return interval, duration
 
     def _init_cwd(self):
         """Capture initial working directory from remote host"""
@@ -358,3 +404,21 @@ Examples:
         else:
             msg = err if err else f"[-] Failed to change directory to {target}"
             print(msg, end='')
+
+    def _start_keepalive(self, interval: int, duration: int):
+        """Start background thread sending noop commands to maintain session"""
+        # Avoid multiple threads
+        if self.keepalive_thread and self.keepalive_thread.is_alive():
+            return
+
+        self.keepalive_stop.clear()
+
+        def _worker():
+            end_time = time.time() + duration
+            while time.time() < end_time and not self.keepalive_stop.is_set():
+                # send lightweight no-op (true command) to keep session active
+                self.execute_command("true")
+                self.keepalive_stop.wait(interval)
+
+        self.keepalive_thread = threading.Thread(target=_worker, daemon=True)
+        self.keepalive_thread.start()

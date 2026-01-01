@@ -86,6 +86,7 @@ class AdvancedSSHTerminal(SSHTerminal):
         choice = input("Select option (1-3): ").strip()
 
         if choice == "1":
+            # Defer to base handler (already prompts for keepalive)
             super()._handle_connect()
             if self.connected:
                 self.add_to_history(self.host, self.username, self.port)
@@ -107,15 +108,21 @@ class AdvancedSSHTerminal(SSHTerminal):
                             key_file = key
                             break
 
+                    keepalive_interval, keepalive_duration = self._prompt_keepalive()
+
                     if key_file:
-                        if self.connect(host, username, port=port, key_file=key_file):
+                        if self.connect(host, username, port=port, key_file=key_file,
+                                         keepalive_interval=keepalive_interval,
+                                         keepalive_duration=keepalive_duration):
                             self.add_to_history(host, username, port)
                             return
 
                     # Try password auth
                     import getpass
                     password = getpass.getpass(f"Password for {username}: ")
-                    if self.connect(host, username, password=password, port=port):
+                    if self.connect(host, username, password=password, port=port,
+                                    keepalive_interval=keepalive_interval,
+                                    keepalive_duration=keepalive_duration):
                         self.add_to_history(host, username, port)
                     else:
                         print("[-] Connection failed")
@@ -125,6 +132,25 @@ class AdvancedSSHTerminal(SSHTerminal):
                 print("[-] Cancelled")
         else:
             print("[-] Cancelled")
+
+    def _prompt_keepalive(self):
+        """Ask user if they want to enable keepalive; return interval,duration"""
+        interval = None
+        duration = None
+        opt = input(
+            f"Enable keepalive? Interval seconds (Enter to skip, default {Config.KEEPALIVE_INTERVAL}): "
+        ).strip()
+        if opt:
+            interval = int(opt) if opt.isdigit() else None
+        if interval:
+            dur = input(
+                f"Keepalive duration seconds (Enter for default {Config.KEEPALIVE_DURATION}): "
+            ).strip()
+            if dur:
+                duration = int(dur) if dur.isdigit() else None
+            else:
+                duration = Config.KEEPALIVE_DURATION
+        return interval, duration
 
     def print_help(self):
         """Extended help information"""

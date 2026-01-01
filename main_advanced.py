@@ -11,6 +11,7 @@ def main():
     """Main entry point for the Advanced SSH Terminal Emulator"""
     try:
         terminal = AdvancedSSHTerminal()
+
         terminal.run()
     except ImportError as e:
         print(f"[-] Import Error: {e}")
