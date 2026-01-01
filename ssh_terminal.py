@@ -24,6 +24,7 @@ class SSHTerminal:
         self.port = 22
         self.session = None
         self.known_hosts_file = os.path.expanduser("~/.ssh/known_hosts")
+        self.cwd = None  # track remote working directory
 
     def connect(self, host: str, username: str, password: Optional[str] = None,
                 port: int = 22, key_file: Optional[str] = None) -> bool:
@@ -94,6 +95,7 @@ class SSHTerminal:
             self.host = host
             self.username = username
             self.port = port
+            self._init_cwd()
 
             return True
 
@@ -115,6 +117,7 @@ class SSHTerminal:
         if self.ssh_client:
             self.ssh_client.close()
             self.connected = False
+            self.cwd = None
             print("[*] Disconnected from server")
 
     def execute_command(self, command: str) -> Tuple[str, str, int]:
@@ -152,8 +155,19 @@ class SSHTerminal:
             print("[-] Not connected to server")
             return
 
+        # Handle directory changes locally so state persists across commands
+        if command.strip().startswith("cd"):
+            parts = command.strip().split(maxsplit=1)
+            target = parts[1] if len(parts) > 1 else "~"
+            self.change_directory(target)
+            return
+
         try:
-            stdout, stderr, return_code = self.execute_command(command)
+            remote_cmd = command
+            if self.cwd:
+                remote_cmd = f"cd {self.cwd} && {command}"
+
+            stdout, stderr, return_code = self.execute_command(remote_cmd)
 
             if stdout:
                 print(stdout, end='')
@@ -324,3 +338,23 @@ Examples:
         else:
             print("[-] Connection failed")
 
+    def _init_cwd(self):
+        """Capture initial working directory from remote host"""
+        out, err, code = self.execute_command("pwd")
+        if code == 0 and out.strip():
+            self.cwd = out.strip().splitlines()[-1]
+        else:
+            self.cwd = None
+
+    def change_directory(self, path: str):
+        """Attempt to change remote directory and persist the new cwd"""
+        target = path.strip() or "~"
+        base = self.cwd or "~"
+        command = f"cd {base} && cd {target} && pwd"
+        out, err, code = self.execute_command(command)
+        if code == 0 and out.strip():
+            self.cwd = out.strip().splitlines()[-1]
+            print(self.cwd)
+        else:
+            msg = err if err else f"[-] Failed to change directory to {target}"
+            print(msg, end='')
